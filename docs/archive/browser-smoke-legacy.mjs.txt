@@ -1,0 +1,343 @@
+import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { chromium } from "file:///C:/Users/ADMIN/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright/index.mjs";
+
+const baseURL = process.env.STRATUM_REVIEW_URL || "http://127.0.0.1:4173";
+const output = path.resolve("artifacts");
+await fs.mkdir(output, { recursive: true });
+const browser = await chromium.launch({
+  executablePath: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+  headless: true,
+  args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"],
+});
+const page = await browser.newPage({
+  viewport: { width: 1440, height: 1000 },
+  reducedMotion: "reduce",
+});
+const errors = [];
+const results = [];
+page.on("pageerror", (error) => errors.push(error.message));
+const check = async (name, body) => {
+  try {
+    await body();
+    results.push({ name, passed: true });
+    console.log(`PASS ${name}`);
+  } catch (error) {
+    results.push({ name, passed: false, error: error.message });
+    console.log(`FAIL ${name}: ${error.message}`);
+  }
+};
+const navigate = async (label) => {
+  await page
+    .locator(".sidebar")
+    .getByRole("button", { name: label, exact: true })
+    .click();
+  await page.waitForTimeout(350);
+};
+const screenshot = (name) =>
+  page.screenshot({
+    path: path.join(output, `review-${name}.png`),
+    fullPage: true,
+  });
+
+try {
+  await page.goto(baseURL, { waitUntil: "networkidle" });
+  await check("problem and solution render before workspace", async () => {
+    await page
+      .getByRole("heading", { name: "Every barrel has a story." })
+      .waitFor();
+    assert.equal(await page.locator(".brief-grid .workflow-step").count(), 4);
+    assert.match(
+      await page.locator(".brief-hero").innerText(),
+      /24 fictional wells/,
+    );
+    await screenshot("brief");
+  });
+  await check(
+    "overview renders real WebGL and keyboard selects an asset",
+    async () => {
+      await navigate("Field overview");
+      await page.locator("canvas").waitFor();
+      const snapshot = await page.evaluate(() =>
+        window.stratumField?.getSnapshot(),
+      );
+      assert.match(snapshot, /^data:image\/png;base64,/);
+      assert.ok(snapshot.length > 10000);
+      await page.locator("canvas").press("ArrowRight");
+      assert.equal(
+        await page.locator(".selected-well h2").innerText(),
+        "KT-013",
+      );
+      await screenshot("overview");
+    },
+  );
+  await check("3D sliders and GLB export are functional", async () => {
+    await page
+      .getByRole("button", { name: "Open 3D motion controls", exact: true })
+      .click();
+    for (const name of [
+      "Pump motion",
+      "Separate layers",
+      "Camera orbit",
+      "Daylight",
+    ]) {
+      const slider = page
+        .locator(".scene-controls label")
+        .filter({ hasText: name })
+        .locator("input");
+      await slider.focus();
+      await slider.press("End");
+      assert.ok(Number(await slider.inputValue()) > 0);
+    }
+    await page.getByRole("button", { name: "Surface", exact: true }).click();
+    await page
+      .locator(".scene-controls label")
+      .filter({ hasText: "Separate layers" })
+      .locator("input")
+      .press("Home");
+    const snapshot = await page.evaluate(() =>
+      window.stratumField.getSnapshot(),
+    );
+    await fs.writeFile(
+      path.join(output, "review-3d.png"),
+      Buffer.from(snapshot.split(",")[1], "base64"),
+    );
+    const downloadPromise = page.waitForEvent("download", { timeout: 60000 });
+    await page.getByRole("button", { name: "GLB", exact: true }).click();
+    const download = await downloadPromise;
+    await download.saveAs(path.join(output, "review-model.glb"));
+    const bytes = await fs.readFile(path.join(output, "review-model.glb"));
+    assert.equal(bytes.subarray(0, 4).toString(), "glTF");
+    assert.ok(bytes.length > 10000);
+    await screenshot("3d-controls");
+  });
+  await check(
+    "search contains focus and safely navigates to a selected asset",
+    async () => {
+      await page.getByRole("button", { name: /Find an asset/ }).click();
+      const dialog = page.getByRole("dialog", { name: "Search wells" });
+      await dialog.waitFor();
+      await page.keyboard.press("Shift+Tab");
+      assert.equal(
+        await page.evaluate(() =>
+          Boolean(document.activeElement.closest('[role="dialog"]')),
+        ),
+        true,
+      );
+      await dialog
+        .getByRole("textbox", { name: "Search wells", exact: true })
+        .fill("KT-012");
+      await dialog.getByRole("button", { name: /KT-012/ }).click();
+      await page
+        .getByRole("heading", { name: "Every signal has a story." })
+        .waitFor();
+      assert.match(
+        await page.locator(".diagnostic-detail").innerText(),
+        /KT-012/,
+      );
+    },
+  );
+  await check(
+    "diagnostic review survives reload and requires outcome before completion",
+    async () => {
+      await page
+        .getByRole("button", { name: "Create review task", exact: true })
+        .click();
+      await navigate("Action center");
+      let card = page.locator(".action-card").filter({ hasText: "KT-012" });
+      await card
+        .getByRole("button", { name: "Start review", exact: true })
+        .click();
+      card = page.locator(".action-card").filter({ hasText: "KT-012" });
+      await card
+        .getByRole("button", { name: "Complete task", exact: true })
+        .click();
+      assert.equal(
+        await page
+          .getByRole("region", { name: "In progress", exact: true })
+          .locator(".action-card")
+          .count(),
+        1,
+      );
+      await card
+        .getByRole("textbox", { name: "Findings / outcome" })
+        .fill("Verified the demonstration measurements; review recorded.");
+      await card
+        .getByRole("button", { name: "Complete task", exact: true })
+        .click();
+      assert.equal(
+        await page
+          .getByRole("region", { name: "Completed", exact: true })
+          .locator(".action-card")
+          .count(),
+        1,
+      );
+      await page.reload({ waitUntil: "networkidle" });
+      assert.match(
+        await page.locator(".action-outcome").innerText(),
+        /Verified the demonstration measurements/,
+      );
+      await screenshot("actions");
+    },
+  );
+  await check(
+    "scenario inputs recalculate, invalid input blocks plans, and valid plan saves",
+    async () => {
+      await navigate("Scenario lab");
+      await page
+        .getByRole("spinbutton", {
+          name: "Available export capacity",
+          exact: true,
+        })
+        .fill("6000");
+      await page
+        .getByRole("spinbutton", { name: "Interruption duration", exact: true })
+        .fill("5");
+      await page
+        .getByRole("spinbutton", { name: "Free usable storage", exact: true })
+        .fill("12000");
+      await page.locator(".assumptions summary").click();
+      assert.match(
+        await page.locator(".conservation-check").innerText(),
+        /exported.*stored.*curtailed/,
+      );
+      await page
+        .getByRole("spinbutton", { name: "Interruption duration", exact: true })
+        .fill("366");
+      await page
+        .getByRole("heading", { name: "Check the scenario inputs" })
+        .waitFor();
+      assert.equal(
+        await page
+          .getByRole("button", { name: "Save plan for review" })
+          .count(),
+        0,
+      );
+      await page
+        .getByRole("spinbutton", { name: "Interruption duration", exact: true })
+        .fill("5");
+      await screenshot("scenarios");
+      await page
+        .getByRole("button", { name: "Save plan for review", exact: true })
+        .click();
+      await page
+        .getByRole("heading", { name: "Turn a finding into a follow-through." })
+        .waitFor();
+      assert.equal(
+        await page
+          .locator(".action-card")
+          .filter({ hasText: "Export contingency" })
+          .count(),
+        1,
+      );
+    },
+  );
+  await check(
+    "CSV errors reject a whole dataset; safe text import gets no invented history",
+    async () => {
+      await navigate("Data workspace");
+      const csv = page.getByRole("textbox", { name: "Or paste CSV content" });
+      await csv.fill(
+        "id,oilBpd,baselineBpd,pressurePsi,pumpLoadPct,waterCutPct\nA-1,500,600,1300,101,30",
+      );
+      await page
+        .getByRole("button", { name: "Validate snapshot", exact: true })
+        .click();
+      assert.match(
+        await page.locator(".validation-result").innerText(),
+        /pumpLoadPct/,
+      );
+      assert.equal(
+        await page
+          .getByRole("button", { name: /Apply .* wells to workspace/ })
+          .count(),
+        0,
+      );
+      await csv.fill(
+        "id,name,oilBpd,baselineBpd,pressurePsi,pumpLoadPct,waterCutPct\nA-1,<img src=x onerror=alert(1)>,0,600,1300,80,30",
+      );
+      await page
+        .getByRole("button", { name: "Validate snapshot", exact: true })
+        .click();
+      await page
+        .getByRole("button", {
+          name: "Apply 1 wells to workspace",
+          exact: true,
+        })
+        .click();
+      assert.equal(
+        await page.locator(".demo-pill").innerText(),
+        "IMPORTED SNAPSHOT",
+      );
+      await navigate("Well diagnostics");
+      await page
+        .getByRole("heading", { name: "No historical measurements" })
+        .waitFor();
+      assert.equal(await page.locator(".diagnostic-detail img").count(), 0);
+      assert.match(
+        await page.locator(".diagnostic-detail").innerText(),
+        /<img src=x onerror=alert\(1\)>/,
+      );
+      assert.match(
+        await page.locator(".evidence-panel").innerText(),
+        /No production recorded/,
+      );
+      await screenshot("imported-diagnostics");
+      await navigate("Problem & solution");
+      assert.equal(
+        await page.locator(".demo-pill").innerText(),
+        "IMPORTED SNAPSHOT",
+      );
+      const ids = await page.locator(".scene-container").innerText();
+      assert.ok(
+        ids.includes("KT-012"),
+        "Problem explanation must retain its fictional demo assets after import",
+      );
+    },
+  );
+  await check(
+    "responsive workspace fits mobile and restores demo data",
+    async () => {
+      await navigate("Data workspace");
+      await page
+        .getByRole("button", {
+          name: "Restore demonstration data",
+          exact: true,
+        })
+        .click();
+      await navigate("Field overview");
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.waitForTimeout(300);
+      const width = await page.evaluate(() => ({
+        scroll: document.documentElement.scrollWidth,
+        client: document.documentElement.clientWidth,
+      }));
+      assert.ok(
+        width.scroll <= width.client + 1,
+        `Horizontal overflow: ${JSON.stringify(width)}`,
+      );
+      await screenshot("mobile");
+      await page
+        .getByRole("button", { name: "Open navigation", exact: true })
+        .click();
+      await page
+        .locator(".sidebar")
+        .getByRole("button", { name: "Well diagnostics", exact: true })
+        .click();
+      await page
+        .getByRole("heading", { name: "Every signal has a story." })
+        .waitFor();
+    },
+  );
+  await check("no uncaught browser exceptions", async () =>
+    assert.deepEqual(errors, []),
+  );
+} finally {
+  await fs.writeFile(
+    path.join(output, "review-browser-results.json"),
+    JSON.stringify({ results, errors }, null, 2),
+  );
+  await browser.close();
+}
+if (results.some((result) => !result.passed)) process.exitCode = 1;
