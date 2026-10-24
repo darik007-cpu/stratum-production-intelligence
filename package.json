@@ -1,0 +1,27 @@
+{
+  "name": "stratum-production-intelligence",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "test": "node --test src/domain.test.js test/*.test.js",
+    "format": "prettier --write src test README.md docs package.json vite.config.js index.html",
+    "format:check": "prettier --check src test README.md docs package.json vite.config.js index.html"
+  },
+  "dependencies": {
+    "@fontsource/inter": "^5.2.8",
+    "leaflet": "^1.9.4",
+    "lucide-react": "^1.61.0",
+    "motion": "^14.6.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "three": "^0.180.0"
+  },
+  "devDependencies": {
+    "prettier": "^3.9.10",
+    "vite": "^7.1.9"
+  }
+}
